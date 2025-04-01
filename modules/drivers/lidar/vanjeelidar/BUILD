@@ -53,6 +53,7 @@ cc_library(
         "//modules/drivers/lidar/vanjeelidar/proto:vanjeelidar_config_cc_proto",
         "@vanjee_driver",
     ],
+    alwayslink = True,
 )
 
 cpplint()
