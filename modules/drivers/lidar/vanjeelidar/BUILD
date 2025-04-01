@@ -51,6 +51,7 @@ cc_library(
         "//modules/drivers/lidar/common:lidar_common",
         "//modules/drivers/lidar/vanjeelidar/proto:vanjeelidar_cc_proto",
         "//modules/drivers/lidar/vanjeelidar/proto:vanjeelidar_config_cc_proto",
+        "@vanjee_driver",
     ],
 )
 
