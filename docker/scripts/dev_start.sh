@@ -14,494 +14,511 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-###############################################################################
+#
+
+# =============================================================================
+# MINIMAL Apollo Development Container Launcher Script (Host Side)
+#
+# This script is a bare-bones launcher. It prepares the host environment,
+# handles basic arguments, determines the correct Docker image, pulls it,
+# mounts essential volumes (code, config, system), and starts the container.
+#
+# ALL model/tool installation, model/map data download, and container-specific
+# setup MUST be handled *INSIDE* the container by separate scripts executed
+# by the user *after* logging in.
+# =============================================================================
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+# Treat unset variables as an error when substituting.
+set -u
+# Exit if any command in a pipeline fails.
+set -o pipefail
+
 CURR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Assuming docker_base.sh provides helper functions like info, warning, error,
+# ok, check_agreement, remove_container_if_exists, determine_gpu_use_host,
+# geo_specific_config, postrun_start_user, optarg_check_for_opt, setup_device,
+# APOLLO_ROOT_DIR, APOLLO_CONFIG_HOME, PYTHON_INSTALL_PATH etc.
+# Also assumes DOCKER_RUN_CMD is defined in docker_base.sh (usually 'docker run')
 source "${CURR_DIR}/docker_base.sh"
 
+# --- Constants: Directories and Container Naming ---
+# CACHE_ROOT_DIR is still relevant for general Apollo caching, not just volumes.
 CACHE_ROOT_DIR="${APOLLO_ROOT_DIR}/.cache"
-
 DOCKER_REPO="apolloauto/apollo"
 DEV_CONTAINER_PREFIX='apollo_dev_'
 DEV_CONTAINER="${DEV_CONTAINER_PREFIX}${USER}"
-DEV_INSIDE="in-dev-docker"
+DEV_INSIDE="in-dev-docker" # Hostname inside the container
 
+# Ensure cache dir exists early
+[ -d "${CACHE_ROOT_DIR}" ] || mkdir -p "${CACHE_ROOT_DIR}"
+
+# --- Constants: Host Environment ---
 SUPPORTED_ARCHS=(x86_64 aarch64)
 TARGET_ARCH="$(uname -m)"
+TIMEZONE_CN=(
+    "Time zone: Asia/Shanghai (CST, +0800)"
+)
 
+# --- Constants: Container Resources ---
+# Resource limits (can be overridden by environment variables)
+DOCKER_CPUS="${DOCKER_CPUS:-6}"
+DOCKER_MEMORY="${DOCKER_MEMORY:-8g}"
+
+# --- Constants: Image Versions ---
+# Default development image versions based on architecture and distribution
 VERSION_X86_64="dev-x86_64-18.04-20221124_1708"
 TESTING_VERSION_X86_64="dev-x86_64-18.04-testing-20210112_0008"
-VERSION_AARCH64="dev-aarch64-20.04-20231024_1054"
-USER_VERSION_OPT=
-FAST_MODE="n"
+VERSION_AARCH64="dev-aarch64-18.04-20201218_0030"
 
-GEOLOC=
-TIMEZONE_CN=(
-  "Time zone: Asia/Shanghai (CST, +0800)"
-)
+# --- Script Global Variables (Modified by arguments/logic) ---
+USER_VERSION_OPT=""
+GEOLOC=""     # Default: auto-detect ('us', 'cn', 'none')
+SHM_SIZE="2G" # Default shared memory size
+USE_LOCAL_IMAGE=0 # Flag to use local image (0 or 1)
+CUSTOM_DIST="stable" # Apollo distribution (stable/testing)
+USER_AGREED="no" # Flag for Apollo License Agreement ('yes' or 'no')
 
-USE_LOCAL_IMAGE=0
-CUSTOM_DIST=
-USER_AGREED="no"
 
-VOLUME_VERSION="latest"
-SHM_SIZE="2G"
-USER_SPECIFIED_MAPS=
-MAP_VOLUMES_CONF=
+# --- Helper Functions ---
 
-# Install python tools
-source docker/setup_host/host_env.sh
-DEFAULT_PYTHON_TOOLS=(
-  amodel~=0.1.0
-)
-
-# Model
-MODEL_REPOSITORY="https://apollo-pkg-beta.cdn.bcebos.com/perception_model"
-DEFAULT_INSTALL_MODEL=(
-  "${MODEL_REPOSITORY}/tl_detection_caffe.zip"
-  "${MODEL_REPOSITORY}/horizontal_caffe.zip"
-  "${MODEL_REPOSITORY}/quadrate_caffe.zip"
-  "${MODEL_REPOSITORY}/vertical_caffe.zip"
-  "${MODEL_REPOSITORY}/darkSCNN_caffe.zip"
-  "${MODEL_REPOSITORY}/cnnseg16_caffe.zip"
-  "${MODEL_REPOSITORY}/3d-r4-half_caffe.zip"
-)
-
-# Map
-DEFAULT_MAPS=(
-    sunnyvale_big_loop
-    sunnyvale_loop
-    sunnyvale_with_two_offices
-    san_mateo
-    #apollo_virutal_map
-)
-
-DEFAULT_TEST_MAPS=(
-  sunnyvale_loop
-)
-
+# Display script usage
 function show_usage() {
-  cat << EOF
+    cat <<EOF
 Usage: $0 [options] ...
 OPTIONS:
-    -h, --help             Display this help and exit.
-    -f, --fast <y|n>       Fast mode without pulling all map volumes and perception models.
+    -h, --help           Display this help and exit.
     -g, --geo <us|cn|none> Pull docker image from geolocation specific registry mirror.
-    -l, --local            Use local docker image.
-    -t, --tag <TAG>        Specify docker image with tag <TAG> to start.
-    -d, --dist             Specify Apollo distribution(stable/testing)
-    -n, --name <env_name>  Specify the name of the docker container, default is current user name.
-    --shm-size <bytes>     Size of /dev/shm . Passed directly to "docker run"
-    -y                     Agree to Apollo License Agreement non-interactively.
-    stop                   Stop all running Apollo containers.
+    -l, --local          Use local docker image if available, skip pulling from remote.
+    -t, --tag <TAG>      Specify docker image with tag <TAG> to start.
+    -d, --dist <stable|testing> Specify Apollo distribution (stable/testing). Default: ${CUSTOM_DIST}.
+    --shm-size <bytes>   Size of /dev/shm. Passed directly to "docker run". Default: ${SHM_SIZE}.
+    -y                   Agree to Apollo License Agreement non-interactively.
+    stop                 Stop all running Apollo containers for the current user.
 EOF
 }
 
+# Parse command line arguments
 function parse_arguments() {
-  local custom_version=""
-  local custom_dist=""
-  local shm_size=""
-  local geo=""
-  local fast_mode=""
+    local custom_version_arg=""
+    local custom_dist_arg=""
+    local shm_size_arg=""
+    local geo_arg=""
+    local user_agreed_arg="no"
 
-  while [ $# -gt 0 ]; do
-    local opt="$1"
-    shift
-    case "${opt}" in
-      -t | --tag)
-        if [ -n "${custom_version}" ]; then
-          warning "Multiple option ${opt} specified, only the last one will take effect."
-        fi
-        custom_version="$1"
+    while [ $# -gt 0 ]; do
+        local opt="$1"
         shift
-        optarg_check_for_opt "${opt}" "${custom_version}"
-        ;;
+        case "${opt}" in
+            -t | --tag)
+                if [ -n "${custom_version_arg}" ]; then
+                    warning "Multiple option ${opt} specified, only the last one will take effect."
+                fi
+                custom_version_arg="$1"
+                shift
+                optarg_check_for_opt "${opt}" "${custom_version_arg}"
+                ;;
 
-      -d | --dist)
-        custom_dist="$1"
-        shift
-        optarg_check_for_opt "${opt}" "${custom_dist}"
-        ;;
+            -d | --dist)
+                custom_dist_arg="$1"
+                shift
+                optarg_check_for_opt "${opt}" "${custom_dist_arg}"
+                ;;
 
-      -h | --help)
-        show_usage
-        exit 1
-        ;;
+            -h | --help)
+                show_usage
+                exit 0 # Use 0 for help
+                ;;
 
-      -f | --fast)
-        fast_mode="$1"
-        shift
-        optarg_check_for_opt "${opt}" "${fast_mode}"
-        ;;
+            -g | --geo)
+                geo_arg="$1"
+                shift
+                optarg_check_for_opt "${opt}" "${geo_arg}"
+                ;;
 
-      -g | --geo)
-        geo="$1"
-        shift
-        optarg_check_for_opt "${opt}" "${geo}"
-        ;;
+            -l | --local)
+                USE_LOCAL_IMAGE=1
+                ;;
 
-      -l | --local)
-        USE_LOCAL_IMAGE=1
-        ;;
+            --shm-size)
+                shm_size_arg="$1"
+                shift
+                optarg_check_for_opt "${opt}" "${shm_size_arg}"
+                ;;
 
-      --user)
-        export CUSTOM_USER="$1"
-        shift
-        ;;
+            -y)
+                user_agreed_arg="yes"
+                ;;
 
-      --uid)
-        export CUSTOM_UID="$1"
-        shift
-        ;;
+            stop)
+                info "Stopping all Apollo containers created by ${USER}..."
+                # Assuming remove_container_if_exists can stop running containers
+                remove_container_if_exists "${DEV_CONTAINER}" -f # Stop and remove force
+                exit 0
+                ;;
 
-      --group)
-        export CUSTOM_GROUP="$1"
-        shift
-        ;;
-      --gid)
-        export CUSTOM_GID="$1"
-        shift
-        ;;
+            *)
+                warning "Unknown option: ${opt}"
+                show_usage
+                exit 2
+                ;;
+        esac
+    done # End while loop
 
-      -n | --name)
-        DEV_CONTAINER="${DEV_CONTAINER_PREFIX}${1}"
-        shift
-        ;;
-
-      --shm-size)
-        shm_size="$1"
-        shift
-        optarg_check_for_opt "${opt}" "${shm_size}"
-        ;;
-
-      --map)
-        map_name="$1"
-        shift
-        USER_SPECIFIED_MAPS="${USER_SPECIFIED_MAPS} ${map_name}"
-        ;;
-      -y)
-        USER_AGREED="yes"
-        ;;
-      stop)
-        info "Now, stop all Apollo containers created by ${USER} ..."
-        stop_all_apollo_containers "-f"
-        exit 0
-        ;;
-      *)
-        warning "Unknown option: ${opt}"
-        exit 2
-        ;;
-    esac
-  done # End while loop
-
-  [[ -n "${geo}" ]] && GEOLOC="${geo}"
-  [[ -n "${fast_mode}" ]] && FAST_MODE="${fast_mode}"
-  [[ -n "${custom_version}" ]] && USER_VERSION_OPT="${custom_version}"
-  [[ -n "${custom_dist}" ]] && CUSTOM_DIST="${custom_dist}"
-  [[ -n "${shm_size}" ]] && SHM_SIZE="${shm_size}"
+    # Assign parsed values to global variables
+    [[ -n "${geo_arg}" ]] && GEOLOC="${geo_arg}"
+    [[ -n "${custom_version_arg}" ]] && USER_VERSION_OPT="${custom_version_arg}"
+    [[ -n "${custom_dist_arg}" ]] && CUSTOM_DIST="${custom_dist_arg}"
+    [[ -n "${shm_size_arg}" ]] && SHM_SIZE="${shm_size_arg}"
+    USER_AGREED="${user_agreed_arg}"
 }
 
+# Determine the final Docker image tag based on architecture, distribution, or user override
 function determine_dev_image() {
-  local version="$1"
-  # If no custom version specified
-  if [[ -z "${version}" ]]; then
-    if [[ "${TARGET_ARCH}" == "x86_64" ]]; then
-      if [[ "${CUSTOM_DIST}" == "testing" ]]; then
-        version="${TESTING_VERSION_X86_64}"
-      else
-        version="${VERSION_X86_64}"
-      fi
-    elif [[ "${TARGET_ARCH}" == "aarch64" ]]; then
-      version="${VERSION_AARCH64}"
+    local custom_version="$1"
+    local version=""
+
+    if [[ -n "${custom_version}" ]]; then
+        version="${custom_version}"
     else
-      error "Logic can't reach here! Please report this issue to Apollo@GitHub."
-      exit 3
+        case "${TARGET_ARCH}" in
+            x86_64)
+                if [[ "${CUSTOM_DIST}" == "testing" ]]; then
+                    version="${TESTING_VERSION_X86_64}"
+                else
+                    version="${VERSION_X86_64}"
+                fi
+                ;;
+            aarch64)
+                version="${VERSION_AARCH64}"
+                ;;
+            *)
+                # This case should ideally be caught by check_target_arch earlier, but keep for robustness
+                error "Unsupported target architecture: ${TARGET_ARCH}. Should not reach here."
+                exit 3
+                ;;
+        esac
     fi
-  fi
-  DEV_IMAGE="${DOCKER_REPO}:${version}"
+    DEV_IMAGE="${DOCKER_REPO}:${version}"
+    info "Determined development image: ${DEV_IMAGE}"
 }
 
+# Check if host OS is supported
 function check_host_environment() {
-  if [[ "${HOST_OS}" != "Linux" ]]; then
-    warning "Running Apollo dev container on ${HOST_OS} is UNTESTED, exiting..."
-    exit 1
-  fi
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        warning "Running Apollo dev container on $(uname -s) is UNTESTED, exiting..."
+        exit 1
+    fi
+    info "Host environment check passed."
 }
 
+# Check if host architecture is supported
 function check_target_arch() {
-  local arch="${TARGET_ARCH}"
-  for ent in "${SUPPORTED_ARCHS[@]}"; do
-    if [[ "${ent}" == "${TARGET_ARCH}" ]]; then
-      return 0
+    local arch_supported=0
+    for ent in "${SUPPORTED_ARCHS[@]}"; do
+        if [[ "${ent}" == "${TARGET_ARCH}" ]]; then
+            arch_supported=1
+            break
+        fi
+    done
+
+    if [[ "${arch_supported}" -eq 0 ]]; then
+        error "Unsupported target architecture: ${TARGET_ARCH}."
+        error "Supported architectures: ${SUPPORTED_ARCHS[*]}"
+        exit 1
     fi
-  done
-  error "Unsupported target architecture: ${TARGET_ARCH}."
-  exit 1
+    info "Target architecture check passed (${TARGET_ARCH})."
 }
 
+# Auto-detect China timezone for geo location if GEOLOC is not explicitly set
 function check_timezone_cn() {
-  # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-  time_zone=$(timedatectl | grep "Time zone" | xargs)
+    # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+    local time_zone=$(timedatectl | grep "Time zone" | xargs || echo "") # Use xargs to trim whitespace, echo "" if grep fails
 
-  for tz in "${TIMEZONE_CN[@]}"; do
-    if [[ "${time_zone}" == "${tz}" ]]; then
-      GEOLOC="cn"
-      return 0
+    if [[ -z "${GEOLOC}" ]]; then # Only auto-detect if GEOLOC wasn't set by argument
+        for tz in "${TIMEZONE_CN[@]}"; do
+            if [[ "${time_zone}" == "${tz}" ]]; then
+                GEOLOC="cn"
+                info "Detected China timezone. Setting GEOLOC=cn for potential mirror usage."
+                return 0
+            fi
+        done
+        info "Did not detect China timezone. GEOLOC remains unset or user-specified."
     fi
-  done
+    return 1 # Not in China timezone or already set
 }
 
-function setup_devices_and_mount_local_volumes() {
-  local __retval="$1"
 
-  [ -d "${CACHE_ROOT_DIR}" ] || mkdir -p "${CACHE_ROOT_DIR}"
+# Prepare standard host volumes to mount into the container.
+# This excludes any map or model specific data volumes.
+# Uses a return variable name passed as argument to set the result string.
+function prepare_docker_volumes() {
+    local __retval="$1" # Name of the variable to set with volume strings
 
-  source "${APOLLO_ROOT_DIR}/scripts/apollo_base.sh"
-  setup_device
+    local volumes=""
 
-  local volumes="-v $APOLLO_ROOT_DIR:/apollo"
+    # Mount the Apollo root directory (codebase)
+    volumes+="-v ${APOLLO_ROOT_DIR}:/apollo"
 
-  [ -d "${APOLLO_CONFIG_HOME}" ] || mkdir -p "${APOLLO_CONFIG_HOME}"
-  volumes="-v ${APOLLO_CONFIG_HOME}:${APOLLO_CONFIG_HOME} ${volumes}"
+    # Mount Apollo config directory (ensure it exists)
+    [ -d "${APOLLO_CONFIG_HOME}" ] || mkdir -p "${APOLLO_CONFIG_HOME}"
+    volumes+=" -v ${APOLLO_CONFIG_HOME}:${APOLLO_CONFIG_HOME}"
 
-  local teleop="${APOLLO_ROOT_DIR}/../apollo-teleop"
-  if [ -d "${teleop}" ]; then
-    volumes="${volumes} -v ${teleop}:/apollo/modules/teleop ${volumes}"
-  fi
-  local apollo_tools="${APOLLO_ROOT_DIR}/../apollo-tools"
-  if [ -d "${apollo_tools}" ]; then
-    volumes="${volumes} -v ${apollo_tools}:/tools"
-  fi
-  # Mount PYTHON_INSTALL_PATH to apollo docker
-  if [ -d "${PYTHON_INSTALL_PATH}" ]; then
-    volumes="${volumes} -v ${PYTHON_INSTALL_PATH}:${PYTHON_INSTALL_PATH}"
-  fi
-
-  local os_release="$(lsb_release -rs)"
-  case "${os_release}" in
-    16.04)
-      warning "[Deprecated] Support for Ubuntu 16.04 will be removed" \
-        "in the near future. Please upgrade to ubuntu 18.04+."
-      volumes="${volumes} -v /dev:/dev"
-      ;;
-    18.04 | 20.04 | *)
-      volumes="${volumes} -v /dev:/dev"
-      ;;
-  esac
-  # local tegra_dir="/usr/lib/aarch64-linux-gnu/tegra"
-  # if [[ "${TARGET_ARCH}" == "aarch64" && -d "${tegra_dir}" ]]; then
-  #    volumes="${volumes} -v ${tegra_dir}:${tegra_dir}:ro"
-  # fi
-  volumes="${volumes} -v /media:/media \
-                        -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-                        -v /etc/localtime:/etc/localtime:ro \
-                        -v /usr/src:/usr/src \
-                        -v /lib/modules:/lib/modules"
-  volumes="$(tr -s " " <<< "${volumes}")"
-  eval "${__retval}='${volumes}'"
-}
-
-function docker_pull() {
-  local img="$1"
-  if [[ "${USE_LOCAL_IMAGE}" -gt 0 ]]; then
-    if docker images --format "{{.Repository}}:{{.Tag}}" | grep -q "${img}"; then
-      info "Local image ${img} found and will be used."
-      return
-    fi
-    warning "Image ${img} not found locally although local mode enabled. Trying to pull from remote registry."
-  fi
-  if [[ -n "${GEO_REGISTRY}" ]]; then
-    img="${GEO_REGISTRY}/${img}"
-  fi
-
-  info "Start pulling docker image ${img} ..."
-  if ! docker pull "${img}"; then
-    error "Failed to pull docker image : ${img}"
-    exit 1
-  fi
-}
-
-function docker_restart_volume() {
-  local volume="$1"
-  local image="$2"
-  local path="$3"
-  info "Create volume ${volume} from image: ${image}"
-  docker_pull "${image}"
-  docker volume rm "${volume}" > /dev/null 2>&1
-  docker run -v "${volume}":"${path}" --rm "${image}" true
-}
-
-function restart_map_volume_if_needed() {
-  local map_name="$1"
-  local map_version="$2"
-  local map_volume="apollo_map_volume-${map_name}_${USER}"
-  local map_path="/apollo/modules/map/data/${map_name}"
-
-  if [[ ${MAP_VOLUMES_CONF} == *"${map_volume}"* ]]; then
-    info "Map ${map_name} has already been included."
-  else
-    local map_image=
-    if [ "${TARGET_ARCH}" = "aarch64" ]; then
-      map_image="${DOCKER_REPO}:map_volume-${map_name}-${TARGET_ARCH}-${map_version}"
+    # Mount apollo-teleop if the directory exists next to apollo
+    local teleop_dir="${APOLLO_ROOT_DIR}/../apollo-teleop"
+    if [ -d "${teleop_dir}" ]; then
+        volumes+=" -v ${teleop_dir}:/apollo/modules/teleop"
     else
-      map_image="${DOCKER_REPO}:map_volume-${map_name}-${map_version}"
+        info "apollo-teleop directory not found at ${teleop_dir}. Skipping mount."
     fi
-    info "Load map ${map_name} from image: ${map_image}"
 
-    docker_restart_volume "${map_volume}" "${map_image}" "${map_path}"
-    MAP_VOLUMES_CONF="${MAP_VOLUMES_CONF} --volume ${map_volume}:${map_path}"
-  fi
-}
-
-function mount_map_volumes() {
-  info "Starting mounting map volumes ..."
-  if [ -n "${USER_SPECIFIED_MAPS}" ]; then
-    for map_name in ${USER_SPECIFIED_MAPS}; do
-      restart_map_volume_if_needed "${map_name}" "${VOLUME_VERSION}"
-    done
-  fi
-
-  if [ "$FAST_MODE" == "n" ] || [ "$FAST_MODE" == "no" ]; then
-    for map_name in ${DEFAULT_MAPS[@]}; do
-      restart_map_volume_if_needed "${map_name}" "${VOLUME_VERSION}"
-    done
-  else
-    for map_name in ${DEFAULT_TEST_MAPS[@]}; do
-      restart_map_volume_if_needed "${map_name}" "${VOLUME_VERSION}"
-    done
-  fi
-}
-
-function install_python_tools() {
-  export PYTHONUSERBASE=${PYTHON_INSTALL_PATH}
-
-  for tool in ${DEFAULT_PYTHON_TOOLS[@]}; do
-    info "Install python tool ${tool} ..."
-    # Use /usr/bin/pip3 because native python is used in the container.
-    /usr/bin/pip3 install --user "${tool}"
-    if [ $? -ne 0 ]; then
-      error "Failed to install ${tool}"
-      exit 1
+    # Mount apollo-tools if the directory exists next to apollo
+    local apollo_tools_dir="${APOLLO_ROOT_DIR}/../apollo-tools"
+    if [ -d "${apollo_tools_dir}" ]; then
+        volumes+=" -v ${apollo_tools_dir}:/tools"
+    else
+         info "apollo-tools directory not found at ${apollo_tools_dir}. Skipping mount."
     fi
-  done
+
+    # Mount PYTHON_INSTALL_PATH for user-installed Python tools persistence.
+    # The *installation* should happen *inside* the container.
+    # Assumes PYTHON_INSTALL_PATH is defined in docker_base.sh or host_env.sh
+    if [ -d "${PYTHON_INSTALL_PATH:-}" ]; then # Check if variable is set and directory exists
+        volumes+=" -v ${PYTHON_INSTALL_PATH}:${PYTHON_INSTALL_PATH}"
+    else
+        warning "PYTHON_INSTALL_PATH is not set or directory not found. Skipping mount."
+    fi
+
+    # Mount /dev directly. Needed for device access (GPU, sensors, etc.).
+    volumes+=" -v /dev:/dev"
+
+    # Optional: Mount NVIDIA specific directories for AARCH64 Jetson
+    # local tegra_dir="/usr/lib/aarch64-linux-gnu/tegra"
+    # if [[ "${TARGET_ARCH}" == "aarch64" && -d "${tegra_dir}" ]]; then
+    #     volumes+=" -v ${tegra_dir}:${tegra_dir}:ro"
+    # fi
+
+    # Standard mounts required for typical X/GUI/system integration
+    volumes+=" -v /media:/media"                 # Removable media
+    volumes+=" -v /tmp/.X11-unix:/tmp/.X11-unix:rw" # X server access
+    volumes+=" -v /etc/localtime:/etc/localtime:ro" # Sync timezone
+    volumes+=" -v /usr/src:/usr/src"             # Mount kernel sources (often needed by drivers/modules)
+    volumes+=" -v /lib/modules:/lib/modules"     # Mount kernel modules (often needed by drivers)
+    volumes+=" -v /dev/null:/dev/raw1394"        # Workaround for some older libraries
+
+    # Clean up any potential multiple spaces generated
+    volumes="$(echo "${volumes}" | tr -s " ")"
+
+    # Set the return variable with the collected volume mount strings
+    eval "${__retval}='${volumes}'"
+    info "Prepared standard docker volumes."
 }
 
-function install_perception_models() {
-  if [ "$FAST_MODE" == "n" ] || [ "$FAST_MODE" == "no" ]; then
-    for model_url in ${DEFAULT_INSTALL_MODEL[@]}; do
-      info "Install model ${model_url} ..."
-      amodel install "${model_url}" -s
-    done
-  else
-    warning "Skip the model installation, if you need to run the perception module, you can manually install."
-  fi
+
+# Pull Docker image, check local cache first if requested.
+# Includes geo-specific registry logic.
+function docker_pull() {
+    local img_tag="$1"
+    local full_img="${img_tag}"
+
+    # Add geo-specific registry if configured by geo_specific_config
+    if [[ -n "${GEO_REGISTRY:-}" ]]; then
+        full_img="${GEO_REGISTRY}/${img_tag}"
+        info "Using geo-specific registry: ${GEO_REGISTRY}"
+    else
+        info "Using default registry for image: ${img_tag}"
+    fi
+
+    if [[ "${USE_LOCAL_IMAGE}" -gt 0 ]]; then
+        info "Local image mode enabled. Checking for local image '${full_img}'."
+        # Using docker image inspect is a robust way to check for image existence
+        if docker image inspect "${full_img}" >/dev/null 2>&1; then
+            info "Local image '${full_img}' found. Using it."
+            return 0 # Success
+        else
+            warning "Local image '${full_img}' not found. Falling back to pulling from remote."
+        fi
+    fi
+
+    info "Starting pull of docker image '${full_img}' ..."
+    # Add retry logic for pulling if needed
+    if ! docker pull "${full_img}"; then
+        error "Failed to pull docker image: '${full_img}'"
+        return 1 # Failure
+    fi
+    info "Docker image '${full_img}' pulled successfully."
+    return 0 # Success
 }
+
+# --- Main Script Execution ---
 
 function main() {
-  check_host_environment
-  check_target_arch
+    # --- Phase 1: Environment and Arguments ---
+    check_host_environment
+    check_target_arch
 
-  parse_arguments "$@"
+    parse_arguments "$@" # Parses arguments and sets global variables
 
-  if [[ "${USER_AGREED}" != "yes" ]]; then
-    check_agreement
-  fi
+    if [[ "${USER_AGREED}" != "yes" ]]; then
+        # check_agreement is assumed to be provided by docker_base.sh
+        check_agreement
+    fi
 
-  determine_dev_image "${USER_VERSION_OPT}"
+    determine_dev_image "${USER_VERSION_OPT}" # Sets DEV_IMAGE
 
-  [[ -z "${GEOLOC}" ]] && check_timezone_cn
-  geo_specific_config "${GEOLOC}"
+    check_timezone_cn # Sets GEOLOC if not already set and timezone is CN
+    # geo_specific_config is assumed to be provided by docker_base.sh
+    # It might set GEO_REGISTRY based on GEOLOC
+    geo_specific_config "${GEOLOC}"
 
-  if [[ "${USE_LOCAL_IMAGE}" -gt 0 ]]; then
-    info "Start docker container based on local image : ${DEV_IMAGE}"
-  fi
+    # --- Phase 2: Docker Image and Container Preparation ---
+    # docker_pull function now handles the full image name with registry and local check
+    if ! docker_pull "${DEV_IMAGE}"; then # Pass DEV_IMAGE (tag only), docker_pull adds registry
+         error "Failed prerequisite: Docker image pull failed. Exiting."
+         exit 1
+    fi
 
-  if ! docker_pull "${DEV_IMAGE}"; then
-    error "Failed to pull docker image ${DEV_IMAGE}"
-    exit 1
-  fi
+    info "Removing existing Apollo Development container '${DEV_CONTAINER}' (if any)..."
+    # remove_container_if_exists is assumed to be provided by docker_base.sh
+    # Use -f to force stop and remove if running
+    remove_container_if_exists "${DEV_CONTAINER}" -f
 
-  info "Remove existing Apollo Development container ..."
-  remove_container_if_exists ${DEV_CONTAINER}
+    info "Determining whether host GPU is available..."
+    # determine_gpu_use_host is assumed to be provided by docker_base.sh
+    # It should set USE_GPU_HOST ('yes' or 'no')
+    determine_gpu_use_host
+    info "USE_GPU_HOST: ${USE_GPU_HOST}"
 
-  info "Determine whether host GPU is available ..."
-  determine_gpu_use_host
-  info "USE_GPU_HOST: ${USE_GPU_HOST}"
+    # Prepare standard host volumes to mount (code, config, /dev, etc.).
+    # This version does NOT include any map or model specific data mounts.
+    local standard_volumes=""
+    prepare_docker_volumes "standard_volumes"
 
-  local local_volumes=
-  setup_devices_and_mount_local_volumes local_volumes
+    # --- Phase 3: Docker Run Command Construction ---
+    # Define the arrays for docker run options
+    local run_opts=(
+        -itd # Interactive, TTY, Detached (run in background)
+        --privileged # Grant extended privileges (often needed for device access)
+        --name "${DEV_CONTAINER}"
+        --net host # Use host network
+        --pid=host # Use host process namespace (allows host process inspection/signals)
+        --shm-size "${SHM_SIZE}"
+        -w /apollo # Set working directory inside container
+        --hostname "${DEV_INSIDE}" # Set hostname inside container for easy identification
+        --label "owner=${USER}" # Label container for easy filtering/management
+    )
 
-  mount_map_volumes
+    # Add GPU options based on detection
+    local gpu_opts=()
+    if [[ "${USE_GPU_HOST}" == "yes" ]]; then
+         info "Adding GPU options for NVIDIA."
+         # Using environment variables for compatibility, modern approach uses --gpus all
+         # If docker/nvidia-container-toolkit version supports it, replace env vars with:
+         # run_opts+=(--gpus all)
+         gpu_opts=(
+             -e NVIDIA_VISIBLE_DEVICES=all
+             -e NVIDIA_DRIVER_CAPABILITIES=compute,video,graphics,utility
+             # -e DOCKER_HOST_GPU=1 # Custom env var if container needs to know GPU is available
+         )
+    else
+        info "GPU not detected or available on host. Skipping GPU options."
+    fi
 
-  if ! [ -x "$(command -v pip3)" ]; then
-    warning "Skip install perception models!!! " \
-      "Need pip3 to install Apollo model management tool!" \
-      "Try \"sudo apt install python3-pip\" "
-  else
-    info "Installing python tools ..."
-    install_python_tools
+    local local_host="$(hostname)"
+    local display="${DISPLAY:-:0}" # Default DISPLAY if not set
+    local user="${USER}"
+    local uid="$(id -u)"
+    local group="$(id -g -n)"
+    local gid="$(id -g)"
 
-    info "Installing perception models ..."
-    install_perception_models
-  fi
+    # Define environment variables to pass into the container
+    # NOTE: This version does NOT pass any environment variables related to
+    # specific models, tools, or maps to be installed/downloaded.
+    local env_opts=(
+        -e DISPLAY="${display}"
+        -e DOCKER_USER="${user}"
+        -e USER="${user}" # Pass host username
+        -e DOCKER_USER_ID="${uid}" # Pass host user ID
+        -e DOCKER_GRP="${group}" # Pass host group name
+        -e DOCKER_GRP_ID="${gid}" # Pass host group ID
+        -e DOCKER_IMG="${DEV_IMAGE}" # Original image name (tag only)
+        -e PYTHON_INSTALL_PATH="${PYTHON_INSTALL_PATH:-}" # Pass Python install path if set
+        -e PYTHON_VERSION="${PYTHON_VERSION:-3}" # Assume Python 3 by default
+        -e USE_GPU_HOST="${USE_GPU_HOST}" # Pass GPU availability status
+        -e CROSS_PLATFORM="${CROSS_PLATFORM_FLAG:-}" # Pass cross-platform build flag if applicable
+        # Any other environment variables needed for the base container environment
+    )
 
-  info "Starting Docker container \"${DEV_CONTAINER}\" ..."
+    # Define host entries to add to the container's /etc/hosts
+    local host_opts=(
+        --add-host "${DEV_INSIDE}:127.0.0.1"
+        --add-host "${local_host}:127.0.0.1"
+    )
 
-  local local_host="$(hostname)"
-  local display="${DISPLAY:-:0}"
-  local user="${CUSTOM_USER-$USER}"
-  local uid="${CUSTOM_UID-$(id -u)}"
-  local group="${CUSTOM_GROUP-$(id -g -n)}"
-  local gid="${CUSTOM_GID-$(id -g)}"
+    # Combine all volume mount strings (standard mounts only)
+    local volume_opts=(
+        ${standard_volumes} # Only standard code, config, system mounts
+    )
 
-  local start_img="${DEV_IMAGE}"
-  if [[ -n "${GEO_REGISTRY}" ]]; then
-    start_img="${GEO_REGISTRY}/${DEV_IMAGE}"
-  fi
+    # Add resource limits (cpus, memory)
+    local resource_opts=(
+        --cpus="${DOCKER_CPUS}"
+        --memory="${DOCKER_MEMORY}"
+    )
 
-  set -x
+    # --- Phase 4: Run the Container ---
+    local full_image_name="${DEV_IMAGE}" # Start with base image tag
+     if [[ -n "${GEO_REGISTRY:-}" ]]; then # Add registry if set
+         full_image_name="${GEO_REGISTRY}/${full_image_name}"
+     fi
 
-  ${DOCKER_RUN_CMD} -itd \
-    --privileged \
-    --name "${DEV_CONTAINER}" \
-    --label "owner=${USER}" \
-    -e CROSS_PLATFORM="${CROSS_PLATFORM_FLAG}" \
-    -e DISPLAY="${display}" \
-    -e DOCKER_USER="${user}" \
-    -e USER="${user}" \
-    -e DOCKER_USER_ID="${uid}" \
-    -e DOCKER_GRP="${group}" \
-    -e DOCKER_GRP_ID="${gid}" \
-    -e DOCKER_IMG="${DEV_IMAGE}" \
-    -e PYTHON_INSTALL_PATH="${PYTHON_INSTALL_PATH}" \
-    -e PYTHON_VERSION="${PYTHON_VERSION}" \
-    -e USE_GPU_HOST="${USE_GPU_HOST}" \
-    -e NVIDIA_VISIBLE_DEVICES=all \
-    -e NVIDIA_DRIVER_CAPABILITIES=compute,video,graphics,utility \
-    ${MAP_VOLUMES_CONF} \
-    ${local_volumes} \
-    --net host \
-    -w /apollo \
-    --add-host "${DEV_INSIDE}:127.0.0.1" \
-    --add-host "${local_host}:127.0.0.1" \
-    --hostname "${DEV_INSIDE}" \
-    --shm-size "${SHM_SIZE}" \
-    --pid=host \
-    -v /dev/null:/dev/raw1394 \
-    "${start_img}" \
-    /bin/bash
+    info "Starting Docker container \"${DEV_CONTAINER}\" from image: ${full_image_name} ..."
+    info "Using SHM_SIZE=${SHM_SIZE}, CPUS=${DOCKER_CPUS}, MEMORY=${DOCKER_MEMORY}"
+    # Be cautious printing all volumes if paths are sensitive
+    # info "Mounted volumes: ${standard_volumes}"
 
-  if [ $? -ne 0 ]; then
-    error "Failed to start docker container \"${DEV_CONTAINER}\" based on image: ${start_img}"
-    exit 1
-  fi
-  set +x
+    # Print the command being executed for debugging before running
+    set -x
+    # Execute the docker run command. The final argument is the image name.
+    # The command run inside the container will be the image's default ENTRYPOINT/CMD.
+    ${DOCKER_RUN_CMD} \
+        "${run_opts[@]}" \
+        "${resource_opts[@]}" \
+        "${gpu_opts[@]}" \
+        "${env_opts[@]}" \
+        "${host_opts[@]}" \
+        "${volume_opts[@]}" \
+        "${full_image_name}"
+        # No explicit command here, relying on the image's default ENTRYPOINT/CMD (likely /bin/bash)
 
-  postrun_start_user "${DEV_CONTAINER}"
+    local docker_run_exit_code=$?
+    set +x # Stop printing commands after docker run finishes
 
-  ok "Congratulations! You have successfully finished setting up Apollo Dev Environment."
-  ok "To login into the newly created ${DEV_CONTAINER} container, please run the following command:"
-  ok "  bash docker/scripts/dev_into.sh"
-  ok "Enjoy!"
+    if [ "${docker_run_exit_code}" -ne 0 ]; then
+        error "Failed to start docker container \"${DEV_CONTAINER}\"."
+        error "Docker run command exited with code: ${docker_run_exit_code}"
+        info "For debugging, try running the docker command printed above manually."
+        exit 1
+    fi
+
+    # postrun_start_user is assumed to be provided by docker_base.sh
+    # This function might attach to the container and run initial commands,
+    # such as switching to the correct user or running a *very basic* setup script.
+    # It should NOT attempt to install/download models/maps/tools in this minimal version.
+    postrun_start_user "${DEV_CONTAINER}" # Pass container name, no specific setup args now
+
+    # --- Phase 5: Completion ---
+    ok "Congratulations! Apollo Dev Environment container '${DEV_CONTAINER}' is running."
+    ok "To login into the container, please run:"
+    ok "  bash docker/scripts/dev_into.sh"
+
+    info "--- Next Steps (Run INSIDE the Container) ---"
+    info "This host script ONLY launched the container."
+    info "ALL further environment setup (installing tools, downloading models, downloading map data) MUST be done *INSIDE* the container."
+    info "After logging in, locate and run the necessary setup scripts within the /apollo directory or as provided by your Apollo distribution."
+    info "You will need to handle persistent storage for models/maps yourself (e.g., by manually mounting volumes/bind mounts to specific data paths like /opt/apollo/data/models and /apollo/modules/map/data when starting the container, or by configuring internal download scripts to use specific locations)."
+    ok "Enjoy!"
 }
 
 main "$@"
