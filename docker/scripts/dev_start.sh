@@ -39,7 +39,7 @@ CURR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # Assuming docker_base.sh provides helper functions like info, warning, error,
 # ok, check_agreement, remove_container_if_exists, determine_gpu_use_host,
 # geo_specific_config, postrun_start_user, optarg_check_for_opt, setup_device,
-# APOLLO_ROOT_DIR, APOLLO_CONFIG_HOME, PYTHON_INSTALL_PATH etc.
+# APOLLO_ROOT_DIR, APOLLO_CONFIG_HOME etc.
 # Also assumes DOCKER_RUN_CMD is defined in docker_base.sh (usually 'docker run')
 source "${CURR_DIR}/docker_base.sh"
 
@@ -76,7 +76,7 @@ VERSION_AARCH64="dev-aarch64-18.04-20201218_0030"
 USER_VERSION_OPT=""
 GEOLOC=""     # Default: auto-detect ('us', 'cn', 'none')
 SHM_SIZE="2G" # Default shared memory size
-USE_LOCAL_IMAGE=0 # Flag to use local image (0 or 1)
+USE_LOCAL_IMAGE=1 # Flag to use local image (0 or 1)
 CUSTOM_DIST="stable" # Apollo distribution (stable/testing)
 USER_AGREED="no" # Flag for Apollo License Agreement ('yes' or 'no')
 
@@ -281,15 +281,6 @@ function prepare_docker_volumes() {
          info "apollo-tools directory not found at ${apollo_tools_dir}. Skipping mount."
     fi
 
-    # Mount PYTHON_INSTALL_PATH for user-installed Python tools persistence.
-    # The *installation* should happen *inside* the container.
-    # Assumes PYTHON_INSTALL_PATH is defined in docker_base.sh or host_env.sh
-    if [ -d "${PYTHON_INSTALL_PATH:-}" ]; then # Check if variable is set and directory exists
-        volumes+=" -v ${PYTHON_INSTALL_PATH}:${PYTHON_INSTALL_PATH}"
-    else
-        warning "PYTHON_INSTALL_PATH is not set or directory not found. Skipping mount."
-    fi
-
     # Mount /dev directly. Needed for device access (GPU, sensors, etc.).
     volumes+=" -v /dev:/dev"
 
@@ -411,7 +402,7 @@ function main() {
 
     # Add GPU options based on detection
     local gpu_opts=()
-    if [[ "${USE_GPU_HOST}" == "yes" ]]; then
+    if [[ "${USE_GPU_HOST}" -eq 1 ]]; then
          info "Adding GPU options for NVIDIA."
          # Using environment variables for compatibility, modern approach uses --gpus all
          # If docker/nvidia-container-toolkit version supports it, replace env vars with:
@@ -422,7 +413,7 @@ function main() {
              # -e DOCKER_HOST_GPU=1 # Custom env var if container needs to know GPU is available
          )
     else
-        info "GPU not detected or available on host. Skipping GPU options."
+        warning "GPU not detected or available on host. Skipping GPU options."
     fi
 
     local local_host="$(hostname)"
@@ -443,7 +434,6 @@ function main() {
         -e DOCKER_GRP="${group}" # Pass host group name
         -e DOCKER_GRP_ID="${gid}" # Pass host group ID
         -e DOCKER_IMG="${DEV_IMAGE}" # Original image name (tag only)
-        -e PYTHON_INSTALL_PATH="${PYTHON_INSTALL_PATH:-}" # Pass Python install path if set
         -e PYTHON_VERSION="${PYTHON_VERSION:-3}" # Assume Python 3 by default
         -e USE_GPU_HOST="${USE_GPU_HOST}" # Pass GPU availability status
         -e CROSS_PLATFORM="${CROSS_PLATFORM_FLAG:-}" # Pass cross-platform build flag if applicable

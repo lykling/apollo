@@ -35,7 +35,7 @@ function geo_specific_config() {
         info "GeoLocation settings for Mainland China"
         GEO_REGISTRY="registry.baidubce.com"
     else
-        info "GeoLocation settings for ${geo} is not ready, fallback to default"
+        warning "GeoLocation settings for ${geo} is not ready, fallback to default"
     fi
 }
 
