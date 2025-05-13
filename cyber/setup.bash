@@ -25,7 +25,10 @@ for entry in "${mainboard_path}" \
     "${visualizer_path}" ; do
     pathprepend "${entry}"
 done
+pathprepend "${HOME}/.local/bin" PATH
 
+pathprepend "${APOLLO_ROOT_DIR}" PYTHONPATH
+pathprepend "${bazel_bin_path}" PYTHONPATH
 pathprepend ${bazel_bin_path}/cyber/python/internal PYTHONPATH
 pathprepend "${PYTHON_INSTALL_PATH}/lib/python${PYTHON_VERSION}/site-packages" PYTHONPATH
 pathprepend "${PYTHON_INSTALL_PATH}/bin/" PATH
@@ -44,3 +47,6 @@ export sysmo_start=0
 #export GLOG_v=4
 
 source ${CYBER_PATH}/tools/cyber_tools_auto_complete.bash
+
+# change it if you want to use another language
+export LANG=C.UTF-8
