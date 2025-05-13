@@ -26,3 +26,5 @@ repos:
     - --filter=-runtime/references
     - --linelength=80
     - --includeorder=standardcfirst
+    # ignore rules temporarily for bug of cpplint
+    - --filter=-whitespace/indent_namespace
