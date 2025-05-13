@@ -27,7 +27,11 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include <cuda_runtime_api.h>
 
@@ -44,7 +48,7 @@
 #include "modules/perception/inference/tensorrt/rt_net.h"
 
 class RTLogger : public nvinfer1::ILogger {
-  void log(Severity severity, const char *msg)noexcept override {
+  void log(Severity severity, const char *msg) noexcept override {
     switch (severity) {
       case Severity::kINTERNAL_ERROR:
       case Severity::kERROR:
@@ -100,9 +104,9 @@ void RTNet::addConvLayer(const LayerParameter &layer_param,
   int nbOutputs = p.num_output();
 
   int kernelH = p.has_kernel_h() ? p.kernel_h() : p.kernel_size(0);
-  int kernelW = p.has_kernel_w() ? p.kernel_w()
-                                 : p.kernel_size_size() > 1 ? p.kernel_size(1)
-                                                            : p.kernel_size(0);
+  int kernelW = p.has_kernel_w()           ? p.kernel_w()
+                : p.kernel_size_size() > 1 ? p.kernel_size(1)
+                                           : p.kernel_size(0);
   int C = getCHW(inputs[0]->getDimensions()).c();
   int G = p.has_group() ? p.group() : 1;
 
@@ -116,24 +120,24 @@ void RTNet::addConvLayer(const LayerParameter &layer_param,
                           nvinfer1::DimsHW{kernelH, kernelW}, wt, bias_weight);
 
   if (convLayer) {
-    int strideH =
-        p.has_stride_h() ? p.stride_h() : p.stride_size() > 0 ? p.stride(0) : 1;
-    int strideW = p.has_stride_w()
-                      ? p.stride_w()
-                      : p.stride_size() > 1
-                            ? p.stride(1)
-                            : p.stride_size() > 0 ? p.stride(0) : 1;
+    int strideH = p.has_stride_h()      ? p.stride_h()
+                  : p.stride_size() > 0 ? p.stride(0)
+                                        : 1;
+    int strideW = p.has_stride_w()      ? p.stride_w()
+                  : p.stride_size() > 1 ? p.stride(1)
+                  : p.stride_size() > 0 ? p.stride(0)
+                                        : 1;
 
     int padH = p.has_pad_h() ? p.pad_h() : p.pad_size() > 0 ? p.pad(0) : 0;
-    int padW =
-        p.has_pad_w()
-            ? p.pad_w()
-            : p.pad_size() > 1 ? p.pad(1) : p.pad_size() > 0 ? p.pad(0) : 0;
+    int padW = p.has_pad_w()      ? p.pad_w()
+               : p.pad_size() > 1 ? p.pad(1)
+               : p.pad_size() > 0 ? p.pad(0)
+                                  : 0;
 
     int dilationH = p.dilation_size() > 0 ? p.dilation(0) : 1;
-    int dilationW = p.dilation_size() > 1
-                        ? p.dilation(1)
-                        : p.dilation_size() > 0 ? p.dilation(0) : 1;
+    int dilationW = p.dilation_size() > 1   ? p.dilation(1)
+                    : p.dilation_size() > 0 ? p.dilation(0)
+                                            : 1;
 
     convLayer->setStride(nvinfer1::DimsHW{strideH, strideW});
     convLayer->setPadding(nvinfer1::DimsHW{padH, padW});
@@ -227,10 +231,10 @@ void RTNet::addActiveLayer(const LayerParameter &layer_param,
 #ifdef NV_TENSORRT_MAJOR
 #if NV_TENSORRT_MAJOR != 8
     nvinfer1::IPluginLayer *ReLU_Layer =
-            net->addPlugin(inputs, nbInputs, *relu_plugin);
+        net->addPlugin(inputs, nbInputs, *relu_plugin);
 #else
     nvinfer1::IPluginV2Layer *ReLU_Layer =
-            net->addPluginV2(inputs, nbInputs, *relu_plugin);
+        net->addPluginV2(inputs, nbInputs, *relu_plugin);
 #endif
 #endif
     relu_plugins_.push_back(relu_plugin);
@@ -595,7 +599,7 @@ void RTNet::addDFMBPSROIAlignLayer(const LayerParameter &layer_param,
       net->addPlugin(inputs, nbInputs, *dfmb_psroi_align_plugin);
 #else
   nvinfer1::IPluginV2Layer *dfmb_psroi_align_layer =
-          net->addPluginV2(inputs, nbInputs, *dfmb_psroi_align_plugin);
+      net->addPluginV2(inputs, nbInputs, *dfmb_psroi_align_plugin);
 #endif
 #endif
   dfmb_psroi_align_layer->setName(layer_param.name().c_str());
@@ -620,14 +624,14 @@ void RTNet::addRCNNProposalLayer(const LayerParameter &layer_param,
   rcnn_proposal_plugins_.push_back(rcnn_proposal_plugin);
 #ifdef NV_TENSORRT_MAJOR
 #if NV_TENSORRT_MAJOR != 8
-    nvinfer1::IPluginLayer *rcnn_proposal_layer =
-        net->addPlugin(inputs, nbInputs, *rcnn_proposal_plugin);
+  nvinfer1::IPluginLayer *rcnn_proposal_layer =
+      net->addPlugin(inputs, nbInputs, *rcnn_proposal_plugin);
 #else
-    nvinfer1::IPluginV2Layer *rcnn_proposal_layer =
-        net->addPluginV2(inputs, nbInputs, *rcnn_proposal_plugin);
+  nvinfer1::IPluginV2Layer *rcnn_proposal_layer =
+      net->addPluginV2(inputs, nbInputs, *rcnn_proposal_plugin);
 #endif
 #endif
-    rcnn_proposal_layer->setName(layer_param.name().c_str());
+  rcnn_proposal_layer->setName(layer_param.name().c_str());
 
   ConstructMap(layer_param, rcnn_proposal_layer, tensor_map, tensor_modify_map);
 }
@@ -649,11 +653,11 @@ void RTNet::addRPNProposalSSDLayer(const LayerParameter &layer_param,
   rpn_proposal_ssd_plugins_.push_back(rpn_proposal_ssd_plugin);
 #ifdef NV_TENSORRT_MAJOR
 #if NV_TENSORRT_MAJOR != 8
-    nvinfer1::IPluginLayer *rpn_proposal_ssd_layer =
-        net->addPlugin(inputs, nbInputs, *rpn_proposal_ssd_plugin);
+  nvinfer1::IPluginLayer *rpn_proposal_ssd_layer =
+      net->addPlugin(inputs, nbInputs, *rpn_proposal_ssd_plugin);
 #else
-    nvinfer1::IPluginV2Layer *rpn_proposal_ssd_layer =
-        net->addPluginV2(inputs, nbInputs, *rpn_proposal_ssd_plugin);
+  nvinfer1::IPluginV2Layer *rpn_proposal_ssd_layer =
+      net->addPluginV2(inputs, nbInputs, *rpn_proposal_ssd_plugin);
 #endif
 #endif
   rpn_proposal_ssd_layer->setName(layer_param.name().c_str());
@@ -908,11 +912,7 @@ bool RTNet::Init(const std::map<std::string, std::vector<int>> &shapes) {
 
   parse_with_api(shapes);
   builder_->setMaxBatchSize(max_batch_size_);
-  workspaceSize_ = 1 << 30;
   builder_->setMaxWorkspaceSize(workspaceSize_);
-  cudaDeviceProp prop;
-  cudaGetDeviceProperties(&prop, gpu_id_);
-  bool int8_mode = checkInt8(prop.name, calibrator_);
 
   builder_->setInt8Mode(int8_mode);
   builder_->setInt8Calibrator(calibrator_);
