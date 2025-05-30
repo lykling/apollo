@@ -46,7 +46,6 @@ source "${CURR_DIR}/docker_base.sh"
 # --- Constants: Directories and Container Naming ---
 # CACHE_ROOT_DIR is still relevant for general Apollo caching, not just volumes.
 CACHE_ROOT_DIR="${APOLLO_ROOT_DIR}/.cache"
-DOCKER_REPO=${DOCKER_REPO:="apolloauto/apollo"}
 DEV_CONTAINER_PREFIX='apollo_dev_'
 DEV_CONTAINER="${DEV_CONTAINER_PREFIX}${USER}"
 DEV_INSIDE="in-dev-docker" # Hostname inside the container
@@ -68,14 +67,16 @@ TIMEZONE_CN=(
 DOCKER_CPUS="${DOCKER_CPUS:-6}"
 DOCKER_MEMORY="${DOCKER_MEMORY:-8g}"
 
-# --- Constants: Image Versions ---
+# --- Constants: Image Name and Versions ---
 # Default development image versions based on architecture and distribution
-VERSION_X86_64="dev-x86_64-18.04-20221124_1708"
-TESTING_VERSION_X86_64="dev-x86_64-18.04-testing-20210112_0008"
-VERSION_AARCH64="dev-aarch64-18.04-20201218_0030"
+# can be overridden by environment variables.
+DOCKER_IMAGE_REPO=${DOCKER_IMAGE_REPO:="apolloauto/apollo"}
+DOCKER_IMAGE_TAG_X86_64=${DOCKER_IMAGE_TAG_X86_64:="dev-x86_64-18.04-20221124_1708"}
+DOCKER_IMAGE_TAG_X86_64_TESTING=${DOCKER_IMAGE_TAG_X86_64_TESTING:="dev-x86_64-18.04-testing-20210112_0008"}
+DOCKER_IMAGE_TAG_AARCH64=${DOCKER_IMAGE_TAG_AARCH64:="dev-aarch64-18.04-20201218_0030"}
 
 # --- Script Global Variables (Modified by arguments/logic) ---
-USER_VERSION_OPT=""
+DOCKER_IMAGE_TAG=${DOCKER_IMAGE_TAG:=""} # Default empty, will be set by arguments or overrided by environment variables
 GEOLOC=""            # Default: auto-detect ('us', 'cn', 'none')
 SHM_SIZE="2G"        # Default shared memory size
 USE_LOCAL_IMAGE=1    # Flag to use local image (0 or 1)
@@ -194,10 +195,18 @@ function parse_arguments() {
 
     # Assign parsed values to global variables
     [[ -n "${geo_arg}" ]] && GEOLOC="${geo_arg}"
-    [[ -n "${custom_version_arg}" ]] && USER_VERSION_OPT="${custom_version_arg}"
+    [[ -n "${custom_version_arg}" ]] && DOCKER_IMAGE_TAG="${custom_version_arg}"
     [[ -n "${custom_dist_arg}" ]] && CUSTOM_DIST="${custom_dist_arg}"
     [[ -n "${shm_size_arg}" ]] && SHM_SIZE="${shm_size_arg}"
     USER_AGREED="${user_agreed_arg}"
+}
+
+image_contains_registry() {
+    image="${1}"
+    if [[ "${image}" =~ ^(([a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+|localhost|([0-9]{1,3}\.){3}[0-9]{1,3})(:[0-9]+)?/ ]]; then
+        echo "1" # Image contains a registry
+    fi
+    echo "0" # Image does not contain a registry
 }
 
 # Determine the final Docker image tag based on architecture, distribution, or user override
@@ -211,13 +220,13 @@ function determine_dev_image() {
         case "${TARGET_ARCH}" in
             x86_64)
                 if [[ "${CUSTOM_DIST}" == "testing" ]]; then
-                    version="${TESTING_VERSION_X86_64}"
+                    version="${DOCKER_IMAGE_TAG_X86_64_TESTING}"
                 else
-                    version="${VERSION_X86_64}"
+                    version="${DOCKER_IMAGE_TAG_X86_64}"
                 fi
                 ;;
             aarch64)
-                version="${VERSION_AARCH64}"
+                version="${DOCKER_IMAGE_TAG_AARCH64}"
                 ;;
             *)
                 # This case should ideally be caught by check_target_arch earlier, but keep for robustness
@@ -226,7 +235,7 @@ function determine_dev_image() {
                 ;;
         esac
     fi
-    DEV_IMAGE="${DOCKER_REPO}:${version}"
+    DEV_IMAGE="${DOCKER_IMAGE_REPO}:${version}"
     info "Determined development image: ${DEV_IMAGE}"
 }
 
@@ -345,7 +354,7 @@ function docker_pull() {
     local full_img="${img_tag}"
 
     # Add geo-specific registry if configured by geo_specific_config
-    if [[ -n "${GEO_REGISTRY:-}" ]]; then
+    if [[ -n "${GEO_REGISTRY:-}" ]] && [[ "$(image_contains_registry "${img_tag}")" == "0" ]]; then
         full_img="${GEO_REGISTRY}/${img_tag}"
         info "Using geo-specific registry: ${GEO_REGISTRY}"
     else
@@ -387,7 +396,7 @@ function main() {
         check_agreement
     fi
 
-    determine_dev_image "${USER_VERSION_OPT}" # Sets DEV_IMAGE
+    determine_dev_image "${DOCKER_IMAGE_TAG}" # Sets DEV_IMAGE
 
     determine_timezone_cn # Sets GEOLOC if not already set and timezone is CN
     # geo_specific_config is assumed to be provided by docker_base.sh
@@ -490,7 +499,7 @@ function main() {
 
     # --- Phase 4: Run the Container ---
     local full_image_name="${DEV_IMAGE}" # Start with base image tag
-    if [[ -n "${GEO_REGISTRY:-}" ]]; then # Add registry if set
+    if [[ -n "${GEO_REGISTRY:-}" ]] && [[ "$(image_contains_registry "${full_image_name}")" == "0" ]]; then
         full_image_name="${GEO_REGISTRY}/${full_image_name}"
     fi
 
