@@ -18,6 +18,10 @@
  * @file
  */
 #include "modules/planning/open_space/trajectory_smoother/distance_approach_ipopt_fixed_dual_interface.h"
+
+#include <algorithm>
+#include <vector>
+
 namespace apollo {
 namespace planning {
 
@@ -44,11 +48,11 @@ DistanceApproachIPOPTFixedDualInterface::
       obstacles_edges_num_(obstacles_edges_num),
       obstacles_A_(obstacles_A),
       obstacles_b_(obstacles_b) {
-  ACHECK(horizon < std::numeric_limits<int>::max())
+  ACHECK(horizon < static_cast<size_t>(std::numeric_limits<int>::max()))
       << "Invalid cast on horizon in open space planner";
   horizon_ = static_cast<int>(horizon);
   ADEBUG << "horizon length: " << horizon_;
-  ACHECK(obstacles_num < std::numeric_limits<int>::max())
+  ACHECK(obstacles_num < static_cast<size_t>(std::numeric_limits<int>::max()))
       << "Invalid cast on obstacles_num in open space planner";
 
   obstacles_num_ = static_cast<int>(obstacles_num);

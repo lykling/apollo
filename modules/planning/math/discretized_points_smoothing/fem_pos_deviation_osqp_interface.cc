@@ -21,6 +21,7 @@
 #include "modules/planning/math/discretized_points_smoothing/fem_pos_deviation_osqp_interface.h"
 
 #include <limits>
+#include <vector>
 
 #include "cyber/common/log.h"
 
@@ -44,7 +45,8 @@ bool FemPosDeviationOsqpInterface::Solve() {
     return false;
   }
 
-  if (ref_points_.size() > std::numeric_limits<int>::max()) {
+  if (ref_points_.size() >
+      static_cast<size_t>(std::numeric_limits<int>::max())) {
     AERROR << "ref_points size too large, solver early terminates";
     return false;
   }

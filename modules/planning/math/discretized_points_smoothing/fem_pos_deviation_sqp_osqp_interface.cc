@@ -22,6 +22,8 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include "cyber/common/log.h"
 
@@ -45,7 +47,8 @@ bool FemPosDeviationSqpOsqpInterface::Solve() {
     return false;
   }
 
-  if (ref_points_.size() > std::numeric_limits<int>::max()) {
+  if (ref_points_.size() >
+      static_cast<size_t>(std::numeric_limits<int>::max())) {
     AERROR << "ref_points size too large, solver early terminates";
     return false;
   }
