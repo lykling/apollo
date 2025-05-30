@@ -58,6 +58,8 @@ DEV_INSIDE="in-dev-docker" # Hostname inside the container
 SUPPORTED_ARCHS=(x86_64 aarch64)
 TARGET_ARCH="$(uname -m)"
 TIMEZONE_CN=(
+    "+0800"
+    "+0800 CST"
     "Time zone: Asia/Shanghai (CST, +0800)"
 )
 
@@ -256,9 +258,17 @@ function check_target_arch() {
 }
 
 # Auto-detect China timezone for geo location if GEOLOC is not explicitly set
-function check_timezone_cn() {
+function determine_timezone_cn() {
     # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-    local time_zone=$(timedatectl | grep "Time zone" | xargs || echo "") # Use xargs to trim whitespace, echo "" if grep fails
+    local time_zone=
+    if command -v timedatectl 2>&1 >/dev/null; then
+        # Use timedatectl if available (systemd based systems)
+        # Use xargs to trim whitespace, echo "" if grep fails
+        time_zone=$(timedatectl | grep "Time zone" | xargs || echo "")
+    else
+        # Fallback to date command for other systems
+        time_zone=$(date +%z)
+    fi
 
     if [[ -z "${GEOLOC}" ]]; then # Only auto-detect if GEOLOC wasn't set by argument
         for tz in "${TIMEZONE_CN[@]}"; do
@@ -270,7 +280,6 @@ function check_timezone_cn() {
         done
         info "Did not detect China timezone. GEOLOC remains unset or user-specified."
     fi
-    return 1 # Not in China timezone or already set
 }
 
 # Prepare standard host volumes to mount into the container.
@@ -380,7 +389,7 @@ function main() {
 
     determine_dev_image "${USER_VERSION_OPT}" # Sets DEV_IMAGE
 
-    check_timezone_cn # Sets GEOLOC if not already set and timezone is CN
+    determine_timezone_cn # Sets GEOLOC if not already set and timezone is CN
     # geo_specific_config is assumed to be provided by docker_base.sh
     # It might set GEO_REGISTRY based on GEOLOC
     geo_specific_config "${GEOLOC}"
