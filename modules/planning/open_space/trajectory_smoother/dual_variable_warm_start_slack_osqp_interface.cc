@@ -20,6 +20,7 @@
 #include "modules/planning/open_space/trajectory_smoother/dual_variable_warm_start_slack_osqp_interface.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "cyber/common/log.h"
 #include "modules/common/configs/vehicle_config_helper.h"
@@ -43,10 +44,10 @@ DualVariableWarmStartSlackOSQPInterface::
       obstacles_A_(obstacles_A),
       obstacles_b_(obstacles_b),
       xWS_(xWS) {
-  ACHECK(horizon < std::numeric_limits<int>::max())
+  ACHECK(horizon < static_cast<size_t>(std::numeric_limits<int>::max()))
       << "Invalid cast on horizon in open space planner";
   horizon_ = static_cast<int>(horizon);
-  ACHECK(obstacles_num < std::numeric_limits<int>::max())
+  ACHECK(obstacles_num < static_cast<size_t>(std::numeric_limits<int>::max()))
       << "Invalid cast on obstacles_num in open space planner";
   obstacles_num_ = static_cast<int>(obstacles_num);
   w_ev_ = ego_(1, 0) + ego_(3, 0);
