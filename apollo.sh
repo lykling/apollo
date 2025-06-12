@@ -157,10 +157,10 @@ function main() {
 
     apollo_env_setup
 
-    local build_sh="${APOLLO_ROOT_DIR}/scripts/apollo_build.sh"
-    local test_sh="${APOLLO_ROOT_DIR}/scripts/apollo_test.sh"
-    local coverage_sh="${APOLLO_ROOT_DIR}/scripts/apollo_coverage.sh"
-    local ci_sh="${APOLLO_ROOT_DIR}/scripts/apollo_ci.sh"
+    local build_sh="${APOLLO_ROOT_DIR}/scripts/ci/apollo_build.sh"
+    local test_sh="${APOLLO_ROOT_DIR}/scripts/ci/apollo_test.sh"
+    local coverage_sh="${APOLLO_ROOT_DIR}/scripts/ci/apollo_coverage.sh"
+    local ci_sh="${APOLLO_ROOT_DIR}/scripts/ci/apollo_ci.sh"
 
     local cmd="$1"
     shift
@@ -217,13 +217,13 @@ function main() {
             env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/apollo_buildify.sh"
             ;;
         lint)
-            env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/apollo_lint.sh" "$@"
+            env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/ci/apollo_lint.sh" "$@"
             ;;
         clean)
-            env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/apollo_clean.sh" "$@"
+            env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/ci/apollo_clean.sh" "$@"
             ;;
         release)
-            env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/apollo_release.sh" "$@"
+            env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/ci/apollo_release.sh" "$@"
             ;;
         doc)
             env ${APOLLO_ENV} bash "${APOLLO_ROOT_DIR}/scripts/apollo_docs.sh" "$@"

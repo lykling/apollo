@@ -16,7 +16,7 @@
 # limitations under the License.
 ###############################################################################
 
-TOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+TOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 source "${TOP_DIR}/scripts/apollo.bashrc"
 
 set -e
@@ -79,9 +79,9 @@ function generate_docs() {
   fi
 
   local start_time="$(get_now)"
-  pushd "${APOLLO_ROOT_DIR}" > /dev/null
-  run "${doxygen_cmd}" "${doxygen_cfg}" > /dev/null
-  popd > /dev/null
+  pushd "${APOLLO_ROOT_DIR}" >/dev/null
+  run "${doxygen_cmd}" "${doxygen_cfg}" >/dev/null
+  popd >/dev/null
 
   local elapsed="$(time_elapsed_s ${start_time})"
   success "Apollo docs generated. Time taken: ${elapsed}s"
